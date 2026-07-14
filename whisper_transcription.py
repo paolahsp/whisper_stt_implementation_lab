@@ -42,7 +42,7 @@ CHUNK_LENGTH_SECONDS = 30
 MAX_AUDIO_FILE_SIZE_MB = 25
 MAX_TRANSCRIPTION_ATTEMPTS = 3
 RETRY_DELAY_SECONDS = 3
-DELAY_BETWEEN_CHUNKS_SECONDS = 1
+DELAY_BETWEEN_REQUESTS_SECONDS = 1
 
 
 # ---------------------------------------------------------
@@ -84,8 +84,7 @@ def create_project_directories() -> None:
 
 def load_openai_client() -> OpenAI:
     """
-    Load the OpenAI API key from the .env file
-    and initialize the OpenAI client.
+    Load the OpenAI API key and initialize the client.
     """
     load_dotenv(BASE_DIR / ".env")
 
@@ -94,13 +93,12 @@ def load_openai_client() -> OpenAI:
     if not api_key:
         raise ValueError(
             "OPENAI_API_KEY was not found. "
-            "Add it to the .env file before running the program."
+            "Add it to the .env file."
         )
 
     if api_key == "your_openai_api_key_here":
         raise ValueError(
-            "The placeholder API key is still configured. "
-            "Replace it with your real OpenAI API key in the .env file."
+            "Replace the placeholder API key in the .env file."
         )
 
     client = OpenAI(api_key=api_key)
@@ -118,20 +116,17 @@ def find_audio_file() -> Path:
     """
     Find the first supported audio file in the audio directory.
     """
-    audio_files = [
+    audio_files = sorted(
         file_path
         for file_path in AUDIO_DIR.iterdir()
         if file_path.is_file()
         and file_path.suffix.lower() in SUPPORTED_AUDIO_EXTENSIONS
-    ]
+    )
 
     if not audio_files:
         raise FileNotFoundError(
-            "No supported audio file was found in the audio directory. "
-            "Add an audio file such as .mp3, .wav, or .m4a."
+            "No supported audio file was found in the audio directory."
         )
-
-    audio_files.sort()
 
     audio_file = audio_files[0]
 
@@ -142,8 +137,7 @@ def find_audio_file() -> Path:
 
 def validate_audio_file(audio_file_path: Path) -> None:
     """
-    Validate that an audio file exists, is not empty,
-    has a supported extension, and is within the size limit.
+    Validate an audio file before processing.
     """
     if not audio_file_path.exists():
         raise FileNotFoundError(
@@ -171,10 +165,9 @@ def validate_audio_file(audio_file_path: Path) -> None:
 
     if file_size_mb > MAX_AUDIO_FILE_SIZE_MB:
         raise ValueError(
-            f"The audio file {audio_file_path.name} is "
-            f"{file_size_mb:.2f} MB. The maximum permitted "
-            f"size is {MAX_AUDIO_FILE_SIZE_MB} MB. "
-            f"Split or compress the audio before transcription."
+            f"{audio_file_path.name} is {file_size_mb:.2f} MB. "
+            f"The maximum permitted size is "
+            f"{MAX_AUDIO_FILE_SIZE_MB} MB."
         )
 
     print(
@@ -183,15 +176,19 @@ def validate_audio_file(audio_file_path: Path) -> None:
     )
 
 
-def analyze_audio_file(audio_file_path: Path) -> AudioSegment:
+def analyze_audio_file(
+    audio_file_path: Path,
+) -> AudioSegment:
     """
-    Load the audio file and print its basic properties.
+    Load the audio and print its properties.
     """
     audio = AudioSegment.from_file(audio_file_path)
 
     duration_seconds = len(audio) / 1000
     duration_minutes = duration_seconds / 60
-    file_size_mb = audio_file_path.stat().st_size / (1024 * 1024)
+    file_size_mb = (
+        audio_file_path.stat().st_size / (1024 * 1024)
+    )
 
     print("Audio analysis completed successfully.")
     print(f"File name: {audio_file_path.name}")
@@ -204,6 +201,161 @@ def analyze_audio_file(audio_file_path: Path) -> AudioSegment:
 
     return audio
 
+
+# ---------------------------------------------------------
+# BASIC, UNGUIDED, AND GUIDED TRANSCRIPTION
+# ---------------------------------------------------------
+
+def transcribe_audio_basic(
+    client: OpenAI,
+    audio_file_path: Path,
+) -> str:
+    """
+    Create a basic transcription without timestamps.
+    """
+    print("Starting basic transcription...")
+
+    with audio_file_path.open("rb") as audio_file:
+        transcription = client.audio.transcriptions.create(
+            model="whisper-1",
+            file=audio_file,
+            response_format="text",
+        )
+
+    transcription_text = str(transcription).strip()
+
+    if not transcription_text:
+        raise ValueError(
+            "The basic transcription returned no text."
+        )
+
+    print("Basic transcription completed successfully.")
+
+    return transcription_text
+
+
+def transcribe_audio_unguided(
+    client: OpenAI,
+    audio_file_path: Path,
+) -> str:
+    """
+    Transcribe audio without contextual prompting.
+    """
+    print("Starting unguided transcription...")
+
+    with audio_file_path.open("rb") as audio_file:
+        transcription = client.audio.transcriptions.create(
+            model="whisper-1",
+            file=audio_file,
+            response_format="text",
+            language="en",
+        )
+
+    transcription_text = str(transcription).strip()
+
+    if not transcription_text:
+        raise ValueError(
+            "The unguided transcription returned no text."
+        )
+
+    print("Unguided transcription completed successfully.")
+
+    return transcription_text
+
+
+def transcribe_audio_guided(
+    client: OpenAI,
+    audio_file_path: Path,
+    prompt: str,
+) -> str:
+    """
+    Transcribe audio using contextual prompting.
+    """
+    print("Starting guided transcription...")
+
+    with audio_file_path.open("rb") as audio_file:
+        transcription = client.audio.transcriptions.create(
+            model="whisper-1",
+            file=audio_file,
+            response_format="text",
+            language="en",
+            prompt=prompt,
+        )
+
+    transcription_text = str(transcription).strip()
+
+    if not transcription_text:
+        raise ValueError(
+            "The guided transcription returned no text."
+        )
+
+    print("Guided transcription completed successfully.")
+
+    return transcription_text
+
+
+# ---------------------------------------------------------
+# TEXT OUTPUTS
+# ---------------------------------------------------------
+
+def save_text_transcription(
+    transcription_text: str,
+    output_file_name: str,
+) -> Path:
+    """
+    Save a transcription to a TXT file.
+    """
+    output_path = OUTPUTS_DIR / output_file_name
+
+    output_path.write_text(
+        transcription_text + "\n",
+        encoding="utf-8",
+    )
+
+    print(f"Transcription saved to: {output_path}")
+
+    return output_path
+
+
+def save_comparison_file(
+    unguided_text: str,
+    guided_text: str,
+) -> Path:
+    """
+    Save guided and unguided results in one file.
+    """
+    output_path = (
+        OUTPUTS_DIR / "transcription_comparison.txt"
+    )
+
+    comparison_content = (
+        "=" * 60
+        + "\nUNGUIDED TRANSCRIPTION\n"
+        + "=" * 60
+        + "\n"
+        + unguided_text
+        + "\n\n"
+        + "=" * 60
+        + "\nGUIDED TRANSCRIPTION\n"
+        + "=" * 60
+        + "\n"
+        + guided_text
+        + "\n"
+    )
+
+    output_path.write_text(
+        comparison_content,
+        encoding="utf-8",
+    )
+
+    print(f"Comparison saved to: {output_path}")
+
+    return output_path
+
+
+# ---------------------------------------------------------
+# AUDIO CHUNKING
+# ---------------------------------------------------------
 
 def clear_existing_chunks() -> None:
     """
@@ -220,7 +372,7 @@ def split_audio_into_chunks(
     chunk_length_seconds: int,
 ) -> list[AudioChunk]:
     """
-    Split audio into fixed-length chunks and store their offsets.
+    Split audio into fixed-length chunks.
     """
     if chunk_length_seconds <= 0:
         raise ValueError(
@@ -310,8 +462,7 @@ def transcribe_chunk_with_timestamps(
     prompt: str | None = None,
 ) -> list[dict[str, Any]]:
     """
-    Transcribe one audio chunk, retry temporary failures,
-    and adjust timestamps using the chunk offset.
+    Transcribe one chunk and adjust its timestamps.
     """
     validate_audio_file(chunk.path)
 
@@ -437,13 +588,13 @@ def transcribe_all_chunks(
     prompt: str | None = None,
 ) -> list[dict[str, Any]]:
     """
-    Transcribe every audio chunk and combine all segments.
+    Transcribe every chunk and combine all segments.
     """
     all_segments: list[dict[str, Any]] = []
 
     print("Starting chunked transcription with timestamps...")
 
-    for chunk in chunks:
+    for chunk_index, chunk in enumerate(chunks):
         chunk_segments = transcribe_chunk_with_timestamps(
             client=client,
             chunk=chunk,
@@ -452,15 +603,15 @@ def transcribe_all_chunks(
 
         all_segments.extend(chunk_segments)
 
-        if chunk != chunks[-1]:
+        if chunk_index < len(chunks) - 1:
             print(
                 f"Waiting "
-                f"{DELAY_BETWEEN_CHUNKS_SECONDS} second "
+                f"{DELAY_BETWEEN_REQUESTS_SECONDS} second "
                 f"before the next chunk..."
             )
 
             time.sleep(
-                DELAY_BETWEEN_CHUNKS_SECONDS
+                DELAY_BETWEEN_REQUESTS_SECONDS
             )
 
     if not all_segments:
@@ -482,7 +633,7 @@ def transcribe_all_chunks(
 
 def format_txt_timestamp(seconds: float) -> str:
     """
-    Convert seconds into HH:MM:SS format for TXT files.
+    Convert seconds into HH:MM:SS.
     """
     total_seconds = int(seconds)
 
@@ -499,7 +650,7 @@ def format_txt_timestamp(seconds: float) -> str:
 
 def format_srt_timestamp(seconds: float) -> str:
     """
-    Convert seconds into HH:MM:SS,mmm format for SRT files.
+    Convert seconds into HH:MM:SS,mmm.
     """
     total_milliseconds = round(seconds * 1000)
 
@@ -521,18 +672,17 @@ def format_srt_timestamp(seconds: float) -> str:
 
 
 # ---------------------------------------------------------
-# EXPORT FUNCTIONS
+# TIMESTAMP EXPORTS
 # ---------------------------------------------------------
 
 def export_segments_to_txt(
     segments: list[dict[str, Any]],
 ) -> Path:
     """
-    Export timestamped transcription segments to TXT.
+    Export timestamped segments to TXT.
     """
     output_path = (
-        OUTPUTS_DIR
-        / "chunked_transcription.txt"
+        OUTPUTS_DIR / "chunked_transcription.txt"
     )
 
     lines: list[str] = []
@@ -566,11 +716,10 @@ def export_segments_to_json(
     source_audio: Path,
 ) -> Path:
     """
-    Export timestamped transcription segments to JSON.
+    Export timestamped segments to JSON.
     """
     output_path = (
-        OUTPUTS_DIR
-        / "chunked_transcription.json"
+        OUTPUTS_DIR / "chunked_transcription.json"
     )
 
     output_data = {
@@ -600,11 +749,10 @@ def export_segments_to_srt(
     segments: list[dict[str, Any]],
 ) -> Path:
     """
-    Export timestamped transcription segments to SRT.
+    Export timestamped segments to SRT.
     """
     output_path = (
-        OUTPUTS_DIR
-        / "chunked_transcription.srt"
+        OUTPUTS_DIR / "chunked_transcription.srt"
     )
 
     srt_blocks: list[str] = []
@@ -644,8 +792,7 @@ def export_segments_to_srt(
 
 def main() -> None:
     """
-    Analyze and split the audio, transcribe every chunk,
-    adjust timestamps, and export the results.
+    Run the complete Whisper transcription workflow.
     """
     print("=" * 60)
     print("WHISPER STT IMPLEMENTATION LAB")
@@ -657,10 +804,66 @@ def main() -> None:
         client = load_openai_client()
 
         audio_file = find_audio_file()
-
         validate_audio_file(audio_file)
-
         audio = analyze_audio_file(audio_file)
+
+        print("-" * 60)
+        print("BASIC TRANSCRIPTION")
+        print("-" * 60)
+
+        basic_text = transcribe_audio_basic(
+            client=client,
+            audio_file_path=audio_file,
+        )
+
+        print(basic_text)
+
+        save_text_transcription(
+            transcription_text=basic_text,
+            output_file_name="basic_transcription.txt",
+        )
+
+        time.sleep(DELAY_BETWEEN_REQUESTS_SECONDS)
+
+        print("-" * 60)
+        print("UNGUIDED TRANSCRIPTION")
+        print("-" * 60)
+
+        unguided_text = transcribe_audio_unguided(
+            client=client,
+            audio_file_path=audio_file,
+        )
+
+        print(unguided_text)
+
+        save_text_transcription(
+            transcription_text=unguided_text,
+            output_file_name="unguided_transcription.txt",
+        )
+
+        time.sleep(DELAY_BETWEEN_REQUESTS_SECONDS)
+
+        print("-" * 60)
+        print("GUIDED TRANSCRIPTION")
+        print("-" * 60)
+
+        guided_text = transcribe_audio_guided(
+            client=client,
+            audio_file_path=audio_file,
+            prompt=GUIDED_TRANSCRIPTION_PROMPT,
+        )
+
+        print(guided_text)
+
+        save_text_transcription(
+            transcription_text=guided_text,
+            output_file_name="guided_transcription.txt",
+        )
+
+        save_comparison_file(
+            unguided_text=unguided_text,
+            guided_text=guided_text,
+        )
 
         print("-" * 60)
         print("AUDIO CHUNKING")
