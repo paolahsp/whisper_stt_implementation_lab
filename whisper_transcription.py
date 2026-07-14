@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,10 @@ GUIDED_TRANSCRIPTION_PROMPT = (
 )
 
 CHUNK_LENGTH_SECONDS = 30
+MAX_AUDIO_FILE_SIZE_MB = 25
+MAX_TRANSCRIPTION_ATTEMPTS = 3
+RETRY_DELAY_SECONDS = 3
+DELAY_BETWEEN_CHUNKS_SECONDS = 1
 
 
 # ---------------------------------------------------------
@@ -133,6 +138,49 @@ def find_audio_file() -> Path:
     print(f"Audio file found: {audio_file.name}")
 
     return audio_file
+
+
+def validate_audio_file(audio_file_path: Path) -> None:
+    """
+    Validate that an audio file exists, is not empty,
+    has a supported extension, and is within the size limit.
+    """
+    if not audio_file_path.exists():
+        raise FileNotFoundError(
+            f"Audio file not found: {audio_file_path}"
+        )
+
+    if not audio_file_path.is_file():
+        raise ValueError(
+            f"The audio path is not a file: {audio_file_path}"
+        )
+
+    if audio_file_path.suffix.lower() not in SUPPORTED_AUDIO_EXTENSIONS:
+        raise ValueError(
+            f"Unsupported audio format: {audio_file_path.suffix}"
+        )
+
+    file_size_bytes = audio_file_path.stat().st_size
+
+    if file_size_bytes == 0:
+        raise ValueError(
+            f"The audio file is empty: {audio_file_path.name}"
+        )
+
+    file_size_mb = file_size_bytes / (1024 * 1024)
+
+    if file_size_mb > MAX_AUDIO_FILE_SIZE_MB:
+        raise ValueError(
+            f"The audio file {audio_file_path.name} is "
+            f"{file_size_mb:.2f} MB. The maximum permitted "
+            f"size is {MAX_AUDIO_FILE_SIZE_MB} MB. "
+            f"Split or compress the audio before transcription."
+        )
+
+    print(
+        f"Audio validation passed: "
+        f"{audio_file_path.name} ({file_size_mb:.2f} MB)"
+    )
 
 
 def analyze_audio_file(audio_file_path: Path) -> AudioSegment:
@@ -262,10 +310,10 @@ def transcribe_chunk_with_timestamps(
     prompt: str | None = None,
 ) -> list[dict[str, Any]]:
     """
-    Transcribe one audio chunk and adjust its timestamps
-    using the chunk's offset in the complete audio.
+    Transcribe one audio chunk, retry temporary failures,
+    and adjust timestamps using the chunk offset.
     """
-    print(f"Transcribing {chunk.path.name}...")
+    validate_audio_file(chunk.path)
 
     request_parameters: dict[str, Any] = {
         "model": "whisper-1",
@@ -277,55 +325,110 @@ def transcribe_chunk_with_timestamps(
     if prompt:
         request_parameters["prompt"] = prompt
 
-    with chunk.path.open("rb") as audio_file:
-        transcription = client.audio.transcriptions.create(
-            file=audio_file,
-            **request_parameters,
-        )
+    last_error: Exception | None = None
 
-    transcription_data = convert_response_to_dict(
-        transcription
-    )
+    for attempt_number in range(
+        1,
+        MAX_TRANSCRIPTION_ATTEMPTS + 1,
+    ):
+        try:
+            print(
+                f"Transcribing {chunk.path.name} "
+                f"(attempt {attempt_number}/"
+                f"{MAX_TRANSCRIPTION_ATTEMPTS})..."
+            )
 
-    raw_segments = transcription_data.get("segments", [])
+            with chunk.path.open("rb") as audio_file:
+                transcription = (
+                    client.audio.transcriptions.create(
+                        file=audio_file,
+                        **request_parameters,
+                    )
+                )
 
-    if not raw_segments:
-        raise ValueError(
-            f"No timestamp segments were returned for "
-            f"{chunk.path.name}."
-        )
+            transcription_data = convert_response_to_dict(
+                transcription
+            )
 
-    adjusted_segments: list[dict[str, Any]] = []
+            raw_segments = transcription_data.get(
+                "segments",
+                [],
+            )
 
-    for segment in raw_segments:
-        local_start = float(segment.get("start", 0.0))
-        local_end = float(segment.get("end", 0.0))
-        text = str(segment.get("text", "")).strip()
+            if not raw_segments:
+                raise ValueError(
+                    f"No timestamp segments were returned for "
+                    f"{chunk.path.name}."
+                )
 
-        if not text:
-            continue
+            adjusted_segments: list[dict[str, Any]] = []
 
-        adjusted_segments.append(
-            {
-                "chunk": chunk.path.name,
-                "start": round(
-                    local_start + chunk.start_seconds,
-                    3,
-                ),
-                "end": round(
-                    local_end + chunk.start_seconds,
-                    3,
-                ),
-                "text": text,
-            }
-        )
+            for segment in raw_segments:
+                local_start = float(
+                    segment.get("start", 0.0)
+                )
+                local_end = float(
+                    segment.get("end", 0.0)
+                )
+                text = str(
+                    segment.get("text", "")
+                ).strip()
 
-    print(
-        f"{chunk.path.name} completed. "
-        f"Segments found: {len(adjusted_segments)}"
-    )
+                if not text:
+                    continue
 
-    return adjusted_segments
+                adjusted_segments.append(
+                    {
+                        "chunk": chunk.path.name,
+                        "start": round(
+                            local_start
+                            + chunk.start_seconds,
+                            3,
+                        ),
+                        "end": round(
+                            local_end
+                            + chunk.start_seconds,
+                            3,
+                        ),
+                        "text": text,
+                    }
+                )
+
+            if not adjusted_segments:
+                raise ValueError(
+                    f"No usable text segments were returned "
+                    f"for {chunk.path.name}."
+                )
+
+            print(
+                f"{chunk.path.name} completed. "
+                f"Segments found: "
+                f"{len(adjusted_segments)}"
+            )
+
+            return adjusted_segments
+
+        except Exception as error:
+            last_error = error
+
+            print(
+                f"Attempt {attempt_number} failed for "
+                f"{chunk.path.name}: "
+                f"{type(error).__name__}: {error}"
+            )
+
+            if attempt_number < MAX_TRANSCRIPTION_ATTEMPTS:
+                print(
+                    f"Waiting {RETRY_DELAY_SECONDS} seconds "
+                    f"before retrying..."
+                )
+
+                time.sleep(RETRY_DELAY_SECONDS)
+
+    raise RuntimeError(
+        f"Transcription failed for {chunk.path.name} "
+        f"after {MAX_TRANSCRIPTION_ATTEMPTS} attempts."
+    ) from last_error
 
 
 def transcribe_all_chunks(
@@ -348,6 +451,17 @@ def transcribe_all_chunks(
         )
 
         all_segments.extend(chunk_segments)
+
+        if chunk != chunks[-1]:
+            print(
+                f"Waiting "
+                f"{DELAY_BETWEEN_CHUNKS_SECONDS} second "
+                f"before the next chunk..."
+            )
+
+            time.sleep(
+                DELAY_BETWEEN_CHUNKS_SECONDS
+            )
 
     if not all_segments:
         raise ValueError(
@@ -543,6 +657,8 @@ def main() -> None:
         client = load_openai_client()
 
         audio_file = find_audio_file()
+
+        validate_audio_file(audio_file)
 
         audio = analyze_audio_file(audio_file)
 
