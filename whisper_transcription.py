@@ -153,12 +153,36 @@ def transcribe_audio_basic(
 
     if not transcription_text:
         raise ValueError(
-            "The transcription request completed, but no text was returned."
+            "The transcription request completed, "
+            "but no text was returned."
         )
 
     print("Basic transcription completed successfully.")
 
     return transcription_text
+
+
+# ---------------------------------------------------------
+# OUTPUT FILE HANDLING
+# ---------------------------------------------------------
+
+def save_text_transcription(
+    transcription_text: str,
+    output_file_name: str,
+) -> Path:
+    """
+    Save transcription text to a plain text file.
+    """
+    output_path = OUTPUTS_DIR / output_file_name
+
+    output_path.write_text(
+        transcription_text,
+        encoding="utf-8",
+    )
+
+    print(f"Transcription saved to: {output_path}")
+
+    return output_path
 
 
 # ---------------------------------------------------------
@@ -168,7 +192,7 @@ def transcribe_audio_basic(
 def main() -> None:
     """
     Run the project setup checks, analyze the audio,
-    and perform a basic transcription.
+    perform a basic transcription, and save the result.
     """
     print("=" * 60)
     print("WHISPER STT IMPLEMENTATION LAB")
@@ -193,6 +217,11 @@ def main() -> None:
         print("-" * 60)
         print(transcription_text)
 
+        save_text_transcription(
+            transcription_text=transcription_text,
+            output_file_name="basic_transcription.txt",
+        )
+
     except FileNotFoundError as error:
         print(f"File error: {error}")
 
@@ -200,7 +229,10 @@ def main() -> None:
         print(f"Configuration error: {error}")
 
     except Exception as error:
-        print(f"Unexpected error: {type(error).__name__}: {error}")
+        print(
+            f"Unexpected error: "
+            f"{type(error).__name__}: {error}"
+        )
 
     print("=" * 60)
     print("Program completed.")

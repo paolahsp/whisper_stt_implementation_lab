@@ -18,6 +18,9 @@ chunks/*
 # Generated transcription files
 outputs/*
 !outputs/.gitkeep
+!outputs/*.txt
+!outputs/*.json
+!outputs/*.srt
 
 # Operating system files
 .DS_Store
