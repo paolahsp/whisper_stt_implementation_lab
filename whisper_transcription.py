@@ -34,6 +34,8 @@ GUIDED_TRANSCRIPTION_PROMPT = (
     "exploration terminology."
 )
 
+CHUNK_LENGTH_SECONDS = 30
+
 
 # ---------------------------------------------------------
 # PROJECT SETUP
@@ -137,6 +139,77 @@ def analyze_audio_file(audio_file_path: Path) -> AudioSegment:
     return audio
 
 
+def clear_existing_chunks() -> None:
+    """
+    Remove previously generated chunk files.
+    """
+    for chunk_file in CHUNKS_DIR.glob("chunk_*.mp3"):
+        chunk_file.unlink()
+
+    print("Existing generated chunks cleared.")
+
+
+def split_audio_into_chunks(
+    audio: AudioSegment,
+    chunk_length_seconds: int,
+) -> list[Path]:
+    """
+    Split audio into fixed-length chunks and export them as MP3 files.
+    """
+    if chunk_length_seconds <= 0:
+        raise ValueError(
+            "Chunk length must be greater than zero."
+        )
+
+    clear_existing_chunks()
+
+    chunk_length_ms = chunk_length_seconds * 1000
+    chunk_paths: list[Path] = []
+
+    print(
+        f"Splitting audio into "
+        f"{chunk_length_seconds}-second chunks..."
+    )
+
+    for chunk_number, start_ms in enumerate(
+        range(0, len(audio), chunk_length_ms),
+        start=1,
+    ):
+        end_ms = min(
+            start_ms + chunk_length_ms,
+            len(audio),
+        )
+
+        audio_chunk = audio[start_ms:end_ms]
+
+        chunk_path = (
+            CHUNKS_DIR
+            / f"chunk_{chunk_number:03d}.mp3"
+        )
+
+        audio_chunk.export(
+            chunk_path,
+            format="mp3",
+        )
+
+        start_seconds = start_ms / 1000
+        end_seconds = end_ms / 1000
+
+        print(
+            f"Created {chunk_path.name}: "
+            f"{start_seconds:.2f}s to {end_seconds:.2f}s"
+        )
+
+        chunk_paths.append(chunk_path)
+
+    print(
+        f"Audio chunking completed successfully. "
+        f"Total chunks: {len(chunk_paths)}"
+    )
+
+    return chunk_paths
+
+
 # ---------------------------------------------------------
 # TRANSCRIPTION FUNCTIONS
 # ---------------------------------------------------------
@@ -231,7 +304,10 @@ def save_comparison_file(
     """
     Save both transcription results in one comparison file.
     """
-    comparison_path = OUTPUTS_DIR / "transcription_comparison.txt"
+    comparison_path = (
+        OUTPUTS_DIR
+        / "transcription_comparison.txt"
+    )
 
     comparison_content = (
         "=" * 60
@@ -264,8 +340,8 @@ def save_comparison_file(
 
 def main() -> None:
     """
-    Analyze the audio, create guided and unguided
-    transcriptions, and save the results.
+    Analyze the audio, create transcriptions,
+    split the audio into chunks, and save outputs.
     """
     print("=" * 60)
     print("WHISPER STT IMPLEMENTATION LAB")
@@ -278,7 +354,7 @@ def main() -> None:
 
         audio_file = find_audio_file()
 
-        analyze_audio_file(audio_file)
+        audio = analyze_audio_file(audio_file)
 
         print("-" * 60)
         print("UNGUIDED APPROACH")
@@ -317,6 +393,20 @@ def main() -> None:
             unguided_text=unguided_transcription,
             guided_text=guided_transcription,
         )
+
+        print("-" * 60)
+        print("AUDIO CHUNKING")
+        print("-" * 60)
+
+        chunk_paths = split_audio_into_chunks(
+            audio=audio,
+            chunk_length_seconds=CHUNK_LENGTH_SECONDS,
+        )
+
+        print("Generated chunk files:")
+
+        for chunk_path in chunk_paths:
+            print(f"- {chunk_path.name}")
 
     except FileNotFoundError as error:
         print(f"File error: {error}")
