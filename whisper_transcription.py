@@ -26,6 +26,14 @@ SUPPORTED_AUDIO_EXTENSIONS = [
     ".webm",
 ]
 
+GUIDED_TRANSCRIPTION_PROMPT = (
+    "This audio is an English conversation about the Apollo Moon mission, "
+    "astronauts returning from the Moon, lunar exploration, spacecraft, "
+    "rendezvous, orbiting the Moon, lunar rocks, soil samples, and future "
+    "space missions. Preserve natural punctuation and use accurate space "
+    "exploration terminology."
+)
+
 
 # ---------------------------------------------------------
 # PROJECT SETUP
@@ -130,34 +138,65 @@ def analyze_audio_file(audio_file_path: Path) -> AudioSegment:
 
 
 # ---------------------------------------------------------
-# BASIC TRANSCRIPTION
+# TRANSCRIPTION FUNCTIONS
 # ---------------------------------------------------------
 
-def transcribe_audio_basic(
+def transcribe_audio_unguided(
     client: OpenAI,
     audio_file_path: Path,
 ) -> str:
     """
-    Transcribe an audio file without prompts or timestamps.
+    Transcribe an audio file without a prompt.
     """
-    print("Starting basic transcription...")
+    print("Starting unguided transcription...")
 
     with audio_file_path.open("rb") as audio_file:
         transcription = client.audio.transcriptions.create(
             model="whisper-1",
             file=audio_file,
             response_format="text",
+            language="en",
         )
 
     transcription_text = str(transcription).strip()
 
     if not transcription_text:
         raise ValueError(
-            "The transcription request completed, "
-            "but no text was returned."
+            "The unguided transcription returned no text."
         )
 
-    print("Basic transcription completed successfully.")
+    print("Unguided transcription completed successfully.")
+
+    return transcription_text
+
+
+def transcribe_audio_guided(
+    client: OpenAI,
+    audio_file_path: Path,
+    prompt: str,
+) -> str:
+    """
+    Transcribe an audio file using contextual guidance.
+    """
+    print("Starting guided transcription...")
+
+    with audio_file_path.open("rb") as audio_file:
+        transcription = client.audio.transcriptions.create(
+            model="whisper-1",
+            file=audio_file,
+            response_format="text",
+            language="en",
+            prompt=prompt,
+        )
+
+    transcription_text = str(transcription).strip()
+
+    if not transcription_text:
+        raise ValueError(
+            "The guided transcription returned no text."
+        )
+
+    print("Guided transcription completed successfully.")
 
     return transcription_text
 
@@ -176,7 +215,7 @@ def save_text_transcription(
     output_path = OUTPUTS_DIR / output_file_name
 
     output_path.write_text(
-        transcription_text,
+        transcription_text + "\n",
         encoding="utf-8",
     )
 
@@ -185,14 +224,48 @@ def save_text_transcription(
     return output_path
 
 
+def save_comparison_file(
+    unguided_text: str,
+    guided_text: str,
+) -> Path:
+    """
+    Save both transcription results in one comparison file.
+    """
+    comparison_path = OUTPUTS_DIR / "transcription_comparison.txt"
+
+    comparison_content = (
+        "=" * 60
+        + "\nUNGUIDED TRANSCRIPTION\n"
+        + "=" * 60
+        + "\n"
+        + unguided_text
+        + "\n\n"
+        + "=" * 60
+        + "\nGUIDED TRANSCRIPTION\n"
+        + "=" * 60
+        + "\n"
+        + guided_text
+        + "\n"
+    )
+
+    comparison_path.write_text(
+        comparison_content,
+        encoding="utf-8",
+    )
+
+    print(f"Comparison saved to: {comparison_path}")
+
+    return comparison_path
+
+
 # ---------------------------------------------------------
 # MAIN PROGRAM
 # ---------------------------------------------------------
 
 def main() -> None:
     """
-    Run the project setup checks, analyze the audio,
-    perform a basic transcription, and save the result.
+    Analyze the audio, create guided and unguided
+    transcriptions, and save the results.
     """
     print("=" * 60)
     print("WHISPER STT IMPLEMENTATION LAB")
@@ -207,19 +280,42 @@ def main() -> None:
 
         analyze_audio_file(audio_file)
 
-        transcription_text = transcribe_audio_basic(
+        print("-" * 60)
+        print("UNGUIDED APPROACH")
+        print("-" * 60)
+
+        unguided_transcription = transcribe_audio_unguided(
             client=client,
             audio_file_path=audio_file,
         )
 
-        print("-" * 60)
-        print("BASIC TRANSCRIPTION")
-        print("-" * 60)
-        print(transcription_text)
+        print(unguided_transcription)
 
         save_text_transcription(
-            transcription_text=transcription_text,
-            output_file_name="basic_transcription.txt",
+            transcription_text=unguided_transcription,
+            output_file_name="unguided_transcription.txt",
+        )
+
+        print("-" * 60)
+        print("GUIDED APPROACH")
+        print("-" * 60)
+
+        guided_transcription = transcribe_audio_guided(
+            client=client,
+            audio_file_path=audio_file,
+            prompt=GUIDED_TRANSCRIPTION_PROMPT,
+        )
+
+        print(guided_transcription)
+
+        save_text_transcription(
+            transcription_text=guided_transcription,
+            output_file_name="guided_transcription.txt",
+        )
+
+        save_comparison_file(
+            unguided_text=unguided_transcription,
+            guided_text=guided_transcription,
         )
 
     except FileNotFoundError as error:
