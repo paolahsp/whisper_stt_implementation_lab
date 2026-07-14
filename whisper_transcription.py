@@ -1,5 +1,8 @@
+import json
 import os
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from dotenv import load_dotenv
 from openai import OpenAI
@@ -35,6 +38,21 @@ GUIDED_TRANSCRIPTION_PROMPT = (
 )
 
 CHUNK_LENGTH_SECONDS = 30
+
+
+# ---------------------------------------------------------
+# DATA STRUCTURES
+# ---------------------------------------------------------
+
+@dataclass
+class AudioChunk:
+    """
+    Store information about one generated audio chunk.
+    """
+
+    path: Path
+    start_seconds: float
+    end_seconds: float
 
 
 # ---------------------------------------------------------
@@ -152,9 +170,9 @@ def clear_existing_chunks() -> None:
 def split_audio_into_chunks(
     audio: AudioSegment,
     chunk_length_seconds: int,
-) -> list[Path]:
+) -> list[AudioChunk]:
     """
-    Split audio into fixed-length chunks and export them as MP3 files.
+    Split audio into fixed-length chunks and store their offsets.
     """
     if chunk_length_seconds <= 0:
         raise ValueError(
@@ -164,7 +182,7 @@ def split_audio_into_chunks(
     clear_existing_chunks()
 
     chunk_length_ms = chunk_length_seconds * 1000
-    chunk_paths: list[Path] = []
+    chunks: list[AudioChunk] = []
 
     print(
         f"Splitting audio into "
@@ -195,143 +213,315 @@ def split_audio_into_chunks(
         start_seconds = start_ms / 1000
         end_seconds = end_ms / 1000
 
+        chunks.append(
+            AudioChunk(
+                path=chunk_path,
+                start_seconds=start_seconds,
+                end_seconds=end_seconds,
+            )
+        )
+
         print(
             f"Created {chunk_path.name}: "
             f"{start_seconds:.2f}s to {end_seconds:.2f}s"
         )
 
-        chunk_paths.append(chunk_path)
-
     print(
         f"Audio chunking completed successfully. "
-        f"Total chunks: {len(chunk_paths)}"
+        f"Total chunks: {len(chunks)}"
     )
 
-    return chunk_paths
+    return chunks
 
 
 # ---------------------------------------------------------
-# TRANSCRIPTION FUNCTIONS
+# CHUNK TRANSCRIPTION WITH TIMESTAMPS
 # ---------------------------------------------------------
 
-def transcribe_audio_unguided(
+def convert_response_to_dict(
+    transcription: Any,
+) -> dict[str, Any]:
+    """
+    Convert the OpenAI response object into a dictionary.
+    """
+    if hasattr(transcription, "model_dump"):
+        return transcription.model_dump()
+
+    if isinstance(transcription, dict):
+        return transcription
+
+    raise TypeError(
+        "The transcription response could not be converted "
+        "into a dictionary."
+    )
+
+
+def transcribe_chunk_with_timestamps(
     client: OpenAI,
-    audio_file_path: Path,
-) -> str:
+    chunk: AudioChunk,
+    prompt: str | None = None,
+) -> list[dict[str, Any]]:
     """
-    Transcribe an audio file without a prompt.
+    Transcribe one audio chunk and adjust its timestamps
+    using the chunk's offset in the complete audio.
     """
-    print("Starting unguided transcription...")
+    print(f"Transcribing {chunk.path.name}...")
 
-    with audio_file_path.open("rb") as audio_file:
+    request_parameters: dict[str, Any] = {
+        "model": "whisper-1",
+        "response_format": "verbose_json",
+        "language": "en",
+        "timestamp_granularities": ["segment"],
+    }
+
+    if prompt:
+        request_parameters["prompt"] = prompt
+
+    with chunk.path.open("rb") as audio_file:
         transcription = client.audio.transcriptions.create(
-            model="whisper-1",
             file=audio_file,
-            response_format="text",
-            language="en",
+            **request_parameters,
         )
 
-    transcription_text = str(transcription).strip()
+    transcription_data = convert_response_to_dict(
+        transcription
+    )
 
-    if not transcription_text:
+    raw_segments = transcription_data.get("segments", [])
+
+    if not raw_segments:
         raise ValueError(
-            "The unguided transcription returned no text."
+            f"No timestamp segments were returned for "
+            f"{chunk.path.name}."
         )
 
-    print("Unguided transcription completed successfully.")
+    adjusted_segments: list[dict[str, Any]] = []
 
-    return transcription_text
+    for segment in raw_segments:
+        local_start = float(segment.get("start", 0.0))
+        local_end = float(segment.get("end", 0.0))
+        text = str(segment.get("text", "")).strip()
+
+        if not text:
+            continue
+
+        adjusted_segments.append(
+            {
+                "chunk": chunk.path.name,
+                "start": round(
+                    local_start + chunk.start_seconds,
+                    3,
+                ),
+                "end": round(
+                    local_end + chunk.start_seconds,
+                    3,
+                ),
+                "text": text,
+            }
+        )
+
+    print(
+        f"{chunk.path.name} completed. "
+        f"Segments found: {len(adjusted_segments)}"
+    )
+
+    return adjusted_segments
 
 
-def transcribe_audio_guided(
+def transcribe_all_chunks(
     client: OpenAI,
-    audio_file_path: Path,
-    prompt: str,
-) -> str:
+    chunks: list[AudioChunk],
+    prompt: str | None = None,
+) -> list[dict[str, Any]]:
     """
-    Transcribe an audio file using contextual guidance.
+    Transcribe every audio chunk and combine all segments.
     """
-    print("Starting guided transcription...")
+    all_segments: list[dict[str, Any]] = []
 
-    with audio_file_path.open("rb") as audio_file:
-        transcription = client.audio.transcriptions.create(
-            model="whisper-1",
-            file=audio_file,
-            response_format="text",
-            language="en",
+    print("Starting chunked transcription with timestamps...")
+
+    for chunk in chunks:
+        chunk_segments = transcribe_chunk_with_timestamps(
+            client=client,
+            chunk=chunk,
             prompt=prompt,
         )
 
-    transcription_text = str(transcription).strip()
+        all_segments.extend(chunk_segments)
 
-    if not transcription_text:
+    if not all_segments:
         raise ValueError(
-            "The guided transcription returned no text."
+            "The chunked transcription returned no segments."
         )
 
-    print("Guided transcription completed successfully.")
+    print(
+        "Chunked transcription completed successfully. "
+        f"Total segments: {len(all_segments)}"
+    )
 
-    return transcription_text
+    return all_segments
 
 
 # ---------------------------------------------------------
-# OUTPUT FILE HANDLING
+# TIMESTAMP FORMATTING
 # ---------------------------------------------------------
 
-def save_text_transcription(
-    transcription_text: str,
-    output_file_name: str,
+def format_txt_timestamp(seconds: float) -> str:
+    """
+    Convert seconds into HH:MM:SS format for TXT files.
+    """
+    total_seconds = int(seconds)
+
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    remaining_seconds = total_seconds % 60
+
+    return (
+        f"{hours:02d}:"
+        f"{minutes:02d}:"
+        f"{remaining_seconds:02d}"
+    )
+
+
+def format_srt_timestamp(seconds: float) -> str:
+    """
+    Convert seconds into HH:MM:SS,mmm format for SRT files.
+    """
+    total_milliseconds = round(seconds * 1000)
+
+    hours = total_milliseconds // 3_600_000
+    remaining = total_milliseconds % 3_600_000
+
+    minutes = remaining // 60_000
+    remaining %= 60_000
+
+    whole_seconds = remaining // 1000
+    milliseconds = remaining % 1000
+
+    return (
+        f"{hours:02d}:"
+        f"{minutes:02d}:"
+        f"{whole_seconds:02d},"
+        f"{milliseconds:03d}"
+    )
+
+
+# ---------------------------------------------------------
+# EXPORT FUNCTIONS
+# ---------------------------------------------------------
+
+def export_segments_to_txt(
+    segments: list[dict[str, Any]],
 ) -> Path:
     """
-    Save transcription text to a plain text file.
+    Export timestamped transcription segments to TXT.
     """
-    output_path = OUTPUTS_DIR / output_file_name
+    output_path = (
+        OUTPUTS_DIR
+        / "chunked_transcription.txt"
+    )
+
+    lines: list[str] = []
+
+    for segment in segments:
+        start_time = format_txt_timestamp(
+            float(segment["start"])
+        )
+        end_time = format_txt_timestamp(
+            float(segment["end"])
+        )
+
+        lines.append(
+            f"[{start_time} - {end_time}]"
+        )
+        lines.append(str(segment["text"]))
+        lines.append("")
 
     output_path.write_text(
-        transcription_text + "\n",
+        "\n".join(lines),
         encoding="utf-8",
     )
 
-    print(f"Transcription saved to: {output_path}")
+    print(f"TXT transcription saved to: {output_path}")
 
     return output_path
 
 
-def save_comparison_file(
-    unguided_text: str,
-    guided_text: str,
+def export_segments_to_json(
+    segments: list[dict[str, Any]],
+    source_audio: Path,
 ) -> Path:
     """
-    Save both transcription results in one comparison file.
+    Export timestamped transcription segments to JSON.
     """
-    comparison_path = (
+    output_path = (
         OUTPUTS_DIR
-        / "transcription_comparison.txt"
+        / "chunked_transcription.json"
     )
 
-    comparison_content = (
-        "=" * 60
-        + "\nUNGUIDED TRANSCRIPTION\n"
-        + "=" * 60
-        + "\n"
-        + unguided_text
-        + "\n\n"
-        + "=" * 60
-        + "\nGUIDED TRANSCRIPTION\n"
-        + "=" * 60
-        + "\n"
-        + guided_text
-        + "\n"
-    )
+    output_data = {
+        "source_audio": source_audio.name,
+        "model": "whisper-1",
+        "language": "en",
+        "chunk_length_seconds": CHUNK_LENGTH_SECONDS,
+        "segment_count": len(segments),
+        "segments": segments,
+    }
 
-    comparison_path.write_text(
-        comparison_content,
+    output_path.write_text(
+        json.dumps(
+            output_data,
+            indent=4,
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )
 
-    print(f"Comparison saved to: {comparison_path}")
+    print(f"JSON transcription saved to: {output_path}")
 
-    return comparison_path
+    return output_path
+
+
+def export_segments_to_srt(
+    segments: list[dict[str, Any]],
+) -> Path:
+    """
+    Export timestamped transcription segments to SRT.
+    """
+    output_path = (
+        OUTPUTS_DIR
+        / "chunked_transcription.srt"
+    )
+
+    srt_blocks: list[str] = []
+
+    for subtitle_number, segment in enumerate(
+        segments,
+        start=1,
+    ):
+        start_time = format_srt_timestamp(
+            float(segment["start"])
+        )
+        end_time = format_srt_timestamp(
+            float(segment["end"])
+        )
+
+        subtitle_block = (
+            f"{subtitle_number}\n"
+            f"{start_time} --> {end_time}\n"
+            f"{segment['text']}"
+        )
+
+        srt_blocks.append(subtitle_block)
+
+    output_path.write_text(
+        "\n\n".join(srt_blocks) + "\n",
+        encoding="utf-8",
+    )
+
+    print(f"SRT transcription saved to: {output_path}")
+
+    return output_path
 
 
 # ---------------------------------------------------------
@@ -340,8 +530,8 @@ def save_comparison_file(
 
 def main() -> None:
     """
-    Analyze the audio, create transcriptions,
-    split the audio into chunks, and save outputs.
+    Analyze and split the audio, transcribe every chunk,
+    adjust timestamps, and export the results.
     """
     print("=" * 60)
     print("WHISPER STT IMPLEMENTATION LAB")
@@ -357,62 +547,66 @@ def main() -> None:
         audio = analyze_audio_file(audio_file)
 
         print("-" * 60)
-        print("UNGUIDED APPROACH")
-        print("-" * 60)
-
-        unguided_transcription = transcribe_audio_unguided(
-            client=client,
-            audio_file_path=audio_file,
-        )
-
-        print(unguided_transcription)
-
-        save_text_transcription(
-            transcription_text=unguided_transcription,
-            output_file_name="unguided_transcription.txt",
-        )
-
-        print("-" * 60)
-        print("GUIDED APPROACH")
-        print("-" * 60)
-
-        guided_transcription = transcribe_audio_guided(
-            client=client,
-            audio_file_path=audio_file,
-            prompt=GUIDED_TRANSCRIPTION_PROMPT,
-        )
-
-        print(guided_transcription)
-
-        save_text_transcription(
-            transcription_text=guided_transcription,
-            output_file_name="guided_transcription.txt",
-        )
-
-        save_comparison_file(
-            unguided_text=unguided_transcription,
-            guided_text=guided_transcription,
-        )
-
-        print("-" * 60)
         print("AUDIO CHUNKING")
         print("-" * 60)
 
-        chunk_paths = split_audio_into_chunks(
+        chunks = split_audio_into_chunks(
             audio=audio,
             chunk_length_seconds=CHUNK_LENGTH_SECONDS,
         )
 
-        print("Generated chunk files:")
+        print("-" * 60)
+        print("CHUNKED TRANSCRIPTION WITH TIMESTAMPS")
+        print("-" * 60)
 
-        for chunk_path in chunk_paths:
-            print(f"- {chunk_path.name}")
+        timestamped_segments = transcribe_all_chunks(
+            client=client,
+            chunks=chunks,
+            prompt=GUIDED_TRANSCRIPTION_PROMPT,
+        )
+
+        print("-" * 60)
+        print("TIMESTAMPED SEGMENTS")
+        print("-" * 60)
+
+        for segment in timestamped_segments:
+            start_time = format_txt_timestamp(
+                float(segment["start"])
+            )
+            end_time = format_txt_timestamp(
+                float(segment["end"])
+            )
+
+            print(
+                f"[{start_time} - {end_time}] "
+                f"{segment['text']}"
+            )
+
+        print("-" * 60)
+        print("EXPORTING RESULTS")
+        print("-" * 60)
+
+        export_segments_to_txt(
+            segments=timestamped_segments,
+        )
+
+        export_segments_to_json(
+            segments=timestamped_segments,
+            source_audio=audio_file,
+        )
+
+        export_segments_to_srt(
+            segments=timestamped_segments,
+        )
 
     except FileNotFoundError as error:
         print(f"File error: {error}")
 
     except ValueError as error:
         print(f"Configuration error: {error}")
+
+    except TypeError as error:
+        print(f"Data error: {error}")
 
     except Exception as error:
         print(

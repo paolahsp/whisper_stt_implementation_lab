@@ -1,0 +1,99 @@
+{
+    "source_audio": "CA138clip.mp3",
+    "model": "whisper-1",
+    "language": "en",
+    "chunk_length_seconds": 30,
+    "segment_count": 15,
+    "segments": [
+        {
+            "chunk": "chunk_001.mp3",
+            "start": 0.0,
+            "end": 12.0,
+            "text": "It was rather interesting just to watch them gathering their materials and bouncing around, what do they call it, kangaroo walk or something like that."
+        },
+        {
+            "chunk": "chunk_001.mp3",
+            "start": 12.0,
+            "end": 13.0,
+            "text": "Who named it that?"
+        },
+        {
+            "chunk": "chunk_001.mp3",
+            "start": 13.0,
+            "end": 15.0,
+            "text": "I don't know."
+        },
+        {
+            "chunk": "chunk_001.mp3",
+            "start": 15.0,
+            "end": 19.0,
+            "text": "I bet those men are going to get quite a reception when they get back to Earth."
+        },
+        {
+            "chunk": "chunk_001.mp3",
+            "start": 19.0,
+            "end": 30.0,
+            "text": "Yes, I'll be so glad when they land back now, but I think that's pretty well a fact because they've landed so many safely now."
+        },
+        {
+            "chunk": "chunk_002.mp3",
+            "start": 31.0,
+            "end": 36.0,
+            "text": "I feel relieved. Just getting off of the Moon was the thing that was..."
+        },
+        {
+            "chunk": "chunk_002.mp3",
+            "start": 36.0,
+            "end": 39.0,
+            "text": "Have they met with the one that was circling?"
+        },
+        {
+            "chunk": "chunk_002.mp3",
+            "start": 39.0,
+            "end": 47.0,
+            "text": "Yes, they've rendezvoused. So I understand. That wasn't shown either, but they say they have rendezvoused."
+        },
+        {
+            "chunk": "chunk_002.mp3",
+            "start": 47.0,
+            "end": 54.0,
+            "text": "So that's a matter of making the circles and then coming down."
+        },
+        {
+            "chunk": "chunk_002.mp3",
+            "start": 54.0,
+            "end": 58.0,
+            "text": "What do you sort of imagine for the future? Do you imagine them sending a..."
+        },
+        {
+            "chunk": "chunk_002.mp3",
+            "start": 58.0,
+            "end": 60.0,
+            "text": "I think they will. I think they will."
+        },
+        {
+            "chunk": "chunk_003.mp3",
+            "start": 60.0,
+            "end": 68.08,
+            "text": "We'll do some more exploring up there, because that was such a very small area, when you think"
+        },
+        {
+            "chunk": "chunk_003.mp3",
+            "start": 68.08,
+            "end": 79.28,
+            "text": "of it, that they just gathered rocks and, oh, samples of soil and all, and they did"
+        },
+        {
+            "chunk": "chunk_003.mp3",
+            "start": 79.28,
+            "end": 84.96,
+            "text": "a probe for some samples, and just what was going to come of that, I don't know, I'd"
+        },
+        {
+            "chunk": "chunk_003.mp3",
+            "start": 84.96,
+            "end": 85.92,
+            "text": "be glad to read it."
+        }
+    ]
+}
