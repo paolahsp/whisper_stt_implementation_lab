@@ -3,6 +3,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from openai import OpenAI
+from pydub import AudioSegment
 
 
 # ---------------------------------------------------------
@@ -16,6 +17,19 @@ OUTPUTS_DIR = BASE_DIR / "outputs"
 SCREENSHOTS_DIR = BASE_DIR / "screenshots"
 REPORT_DIR = BASE_DIR / "report"
 
+SUPPORTED_AUDIO_EXTENSIONS = [
+    ".mp3",
+    ".wav",
+    ".m4a",
+    ".mpeg",
+    ".mp4",
+    ".webm",
+]
+
+
+# ---------------------------------------------------------
+# PROJECT SETUP
+# ---------------------------------------------------------
 
 def create_project_directories() -> None:
     """
@@ -63,9 +77,98 @@ def load_openai_client() -> OpenAI:
     return client
 
 
+# ---------------------------------------------------------
+# AUDIO FILE HANDLING
+# ---------------------------------------------------------
+
+def find_audio_file() -> Path:
+    """
+    Find the first supported audio file in the audio directory.
+    """
+    audio_files = [
+        file_path
+        for file_path in AUDIO_DIR.iterdir()
+        if file_path.is_file()
+        and file_path.suffix.lower() in SUPPORTED_AUDIO_EXTENSIONS
+    ]
+
+    if not audio_files:
+        raise FileNotFoundError(
+            "No supported audio file was found in the audio directory. "
+            "Add an audio file such as .mp3, .wav, or .m4a."
+        )
+
+    audio_files.sort()
+
+    audio_file = audio_files[0]
+
+    print(f"Audio file found: {audio_file.name}")
+
+    return audio_file
+
+
+def analyze_audio_file(audio_file_path: Path) -> AudioSegment:
+    """
+    Load the audio file and print its basic properties.
+    """
+    audio = AudioSegment.from_file(audio_file_path)
+
+    duration_seconds = len(audio) / 1000
+    duration_minutes = duration_seconds / 60
+    file_size_mb = audio_file_path.stat().st_size / (1024 * 1024)
+
+    print("Audio analysis completed successfully.")
+    print(f"File name: {audio_file_path.name}")
+    print(f"File size: {file_size_mb:.2f} MB")
+    print(f"Duration: {duration_seconds:.2f} seconds")
+    print(f"Duration: {duration_minutes:.2f} minutes")
+    print(f"Channels: {audio.channels}")
+    print(f"Frame rate: {audio.frame_rate} Hz")
+    print(f"Sample width: {audio.sample_width} bytes")
+
+    return audio
+
+
+# ---------------------------------------------------------
+# BASIC TRANSCRIPTION
+# ---------------------------------------------------------
+
+def transcribe_audio_basic(
+    client: OpenAI,
+    audio_file_path: Path,
+) -> str:
+    """
+    Transcribe an audio file without prompts or timestamps.
+    """
+    print("Starting basic transcription...")
+
+    with audio_file_path.open("rb") as audio_file:
+        transcription = client.audio.transcriptions.create(
+            model="whisper-1",
+            file=audio_file,
+            response_format="text",
+        )
+
+    transcription_text = str(transcription).strip()
+
+    if not transcription_text:
+        raise ValueError(
+            "The transcription request completed, but no text was returned."
+        )
+
+    print("Basic transcription completed successfully.")
+
+    return transcription_text
+
+
+# ---------------------------------------------------------
+# MAIN PROGRAM
+# ---------------------------------------------------------
+
 def main() -> None:
     """
-    Run the initial project setup checks.
+    Run the project setup checks, analyze the audio,
+    and perform a basic transcription.
     """
     print("=" * 60)
     print("WHISPER STT IMPLEMENTATION LAB")
@@ -74,12 +177,33 @@ def main() -> None:
     create_project_directories()
 
     try:
-        load_openai_client()
+        client = load_openai_client()
+
+        audio_file = find_audio_file()
+
+        analyze_audio_file(audio_file)
+
+        transcription_text = transcribe_audio_basic(
+            client=client,
+            audio_file_path=audio_file,
+        )
+
+        print("-" * 60)
+        print("BASIC TRANSCRIPTION")
+        print("-" * 60)
+        print(transcription_text)
+
+    except FileNotFoundError as error:
+        print(f"File error: {error}")
+
     except ValueError as error:
         print(f"Configuration error: {error}")
 
+    except Exception as error:
+        print(f"Unexpected error: {type(error).__name__}: {error}")
+
     print("=" * 60)
-    print("Initial setup check completed.")
+    print("Program completed.")
     print("=" * 60)
 
 
